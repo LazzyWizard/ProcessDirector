@@ -60,7 +60,7 @@
             <Setter Property="FontSize" Value="13"/>
             <Setter Property="VerticalAlignment" Value="Center"/>
             <Setter Property="Margin" Value="0,0,10,0"/>
-            <Setter Property="Width" Value="180"/>
+            <Setter Property="Width" Value="250"/>
         </Style>
     </Window.Resources>
 
@@ -94,7 +94,7 @@
                     <StackPanel>
                         <CheckBox Content="Включить SuperF4" IsChecked="{Binding SuperF4Enabled}"/>
                         <StackPanel Orientation="Horizontal" Margin="20,5,0,0">
-                            <Label Content="Сочетание клавиш:"/>
+                            <Label Width="250" Content="Сочетание клавиш:"/>
                             <TextBox x:Name="SuperF4TextBox" Style="{StaticResource HotkeyTextBox}"
                                      GotFocus="HotkeyTextBox_GotFocus"
                                      LostFocus="HotkeyTextBox_LostFocus"
@@ -106,12 +106,20 @@
                     </StackPanel>
                 </GroupBox>
 
+                <GroupBox Header="Логирование сетевых соединений">
+                    <StackPanel>
+                        <CheckBox Content="Включить логирование сетевых соединений" 
+                                  IsChecked="{Binding LogNetworkConnections}"
+                                  Margin="0,5,0,5"/>
+                        <TextBlock FontSize="11" Foreground="#666"><Run Text="Отслеживает TCP-соединения процессов и записывает их в лог. Может создавать большое количество записей."/></TextBlock>
+                    </StackPanel>
+                </GroupBox>
+
                 <GroupBox Header="Горячие клавиши">
                     <StackPanel>
 
                         <StackPanel Orientation="Horizontal" Margin="0,5">
-                            <CheckBox Content="Обновление процессов" Width="180" 
-                                      IsChecked="{Binding RefreshEnabled}"/>
+                            <Label Content="Обновление процессов" Width="250"/>
                             <TextBox x:Name="RefreshTextBox" Style="{StaticResource HotkeyTextBox}"
                                      GotFocus="HotkeyTextBox_GotFocus"
                                      LostFocus="HotkeyTextBox_LostFocus"
@@ -119,8 +127,7 @@
                         </StackPanel>
 
                         <StackPanel Orientation="Horizontal" Margin="0,5">
-                            <CheckBox Content="Старт логирования" Width="180" 
-                                      IsChecked="{Binding StartLoggingEnabled}"/>
+                            <Label Content="Старт логирования" Width="250"/>
                             <TextBox x:Name="StartLoggingTextBox" Style="{StaticResource HotkeyTextBox}"
                                      GotFocus="HotkeyTextBox_GotFocus"
                                      LostFocus="HotkeyTextBox_LostFocus"
@@ -128,8 +135,7 @@
                         </StackPanel>
 
                         <StackPanel Orientation="Horizontal" Margin="0,5">
-                            <CheckBox Content="Стоп логирования" Width="180" 
-                                      IsChecked="{Binding StopLoggingEnabled}"/>
+                            <Label Content="Стоп логирования" Width="250"/>
                             <TextBox x:Name="StopLoggingTextBox" Style="{StaticResource HotkeyTextBox}"
                                      GotFocus="HotkeyTextBox_GotFocus"
                                      LostFocus="HotkeyTextBox_LostFocus"
@@ -137,8 +143,7 @@
                         </StackPanel>
 
                         <StackPanel Orientation="Horizontal" Margin="0,5">
-                            <CheckBox Content="Завершить выделенный процесс" Width="180" 
-                                      IsChecked="{Binding KillProcessEnabled}"/>
+                            <Label Content="Завершить выделенный процесс" Width="250"/>
                             <TextBox x:Name="KillProcessTextBox" Style="{StaticResource HotkeyTextBox}"
                                      GotFocus="HotkeyTextBox_GotFocus"
                                      LostFocus="HotkeyTextBox_LostFocus"

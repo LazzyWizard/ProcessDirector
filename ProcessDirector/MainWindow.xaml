@@ -195,15 +195,17 @@
                     </Border>
 
                     <ListBox Grid.Row="2"
-                             VirtualizingPanel.IsVirtualizing="True"
-                             VirtualizingPanel.VirtualizationMode="Recycling"
-                             ScrollViewer.CanContentScroll="False"
-                             ItemsSource="{Binding Source={StaticResource GroupedProcessesSource}}"
-                             SelectedItem="{Binding SelectedProcess}"
-                             BorderThickness="0"
-                             Background="#FFFFFF"
-                             ScrollViewer.VerticalScrollBarVisibility="Auto"
-                             IsSynchronizedWithCurrentItem="True">
+         VirtualizingPanel.IsVirtualizing="True"
+         VirtualizingPanel.VirtualizationMode="Recycling"
+         VirtualizingPanel.ScrollUnit="Pixel"
+         ScrollViewer.CanContentScroll="False"
+         ItemsSource="{Binding Source={StaticResource GroupedProcessesSource}}"
+         SelectedValue="{Binding SelectedProcessId}"
+         SelectedValuePath="Id"
+         BorderThickness="0"
+         Background="#FFFFFF"
+         ScrollViewer.VerticalScrollBarVisibility="Auto"
+         IsSynchronizedWithCurrentItem="True">
                         <ListBox.ContextMenu>
                             <ContextMenu>
                                 <MenuItem Header="Завершить процесс" Command="{Binding KillProcessCommand}"/>
@@ -290,13 +292,16 @@
                     </Border>
 
                     <Border Grid.Row="2" Background="#1E1E1E" BorderBrush="#333333" BorderThickness="1" Padding="4" Margin="0,0,0,6" x:Name="LogBorder">
-                        <ScrollViewer x:Name="LogScrollViewer" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
+                        <ScrollViewer x:Name="LogScrollViewer" 
+                  VerticalScrollBarVisibility="Auto" 
+                  HorizontalScrollBarVisibility="Visible">
                             <ListBox ItemsSource="{Binding LogEntries}"
-                                     SelectedItem="{Binding SelectedLogEntry, Mode=TwoWay}"
-                                     Background="Transparent"
-                                     BorderThickness="0"
-                                     ItemContainerStyle="{StaticResource LogListBoxItem}"
-                                     ScrollViewer.VerticalScrollBarVisibility="Disabled">
+                 SelectedItem="{Binding SelectedLogEntry, Mode=TwoWay}"
+                 Background="Transparent"
+                 BorderThickness="0"
+                 ItemContainerStyle="{StaticResource LogListBoxItem}"
+                 ScrollViewer.VerticalScrollBarVisibility="Disabled"
+                 ScrollViewer.HorizontalScrollBarVisibility="Disabled">
                                 <ListBox.ContextMenu>
                                     <ContextMenu>
                                         <MenuItem Header="Завершить процесс" Command="{Binding KillProcessFromLogCommand}"/>
@@ -308,7 +313,12 @@
                                 </ListBox.ContextMenu>
                                 <ListBox.ItemTemplate>
                                     <DataTemplate>
-                                        <TextBlock Text="{Binding}" FontFamily="Consolas" FontSize="10" Foreground="#D4D4D4" Margin="0,1,0,1" TextWrapping="Wrap"/>
+                                        <TextBlock Text="{Binding}" 
+                               FontFamily="Consolas" 
+                               FontSize="10" 
+                               Foreground="#D4D4D4" 
+                               Margin="0,1,0,1" 
+                               TextWrapping="NoWrap"/>
                                     </DataTemplate>
                                 </ListBox.ItemTemplate>
                             </ListBox>

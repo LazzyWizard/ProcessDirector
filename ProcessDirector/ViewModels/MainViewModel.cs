@@ -43,11 +43,38 @@ namespace ProcessDirector.ViewModels
                 {
                     _selectedProcess = value;
                     OnPropertyChanged("SelectedProcess");
+                    if (value != null)
+                        SelectedProcessId = value.Id;
+                    else
+                        SelectedProcessId = null;
                     (KillProcessCommand as RelayCommand)?.RaiseCanExecuteChanged();
                     (KillProcessTreeCommand as RelayCommand)?.RaiseCanExecuteChanged();
                     (FreezeProcessCommand as RelayCommand)?.RaiseCanExecuteChanged();
                     (UnfreezeProcessCommand as RelayCommand)?.RaiseCanExecuteChanged();
                     (OpenFileLocationCommand as RelayCommand)?.RaiseCanExecuteChanged();
+                }
+            }
+        }
+
+        private int? _selectedProcessId;
+        public int? SelectedProcessId
+        {
+            get { return _selectedProcessId; }
+            set
+            {
+                if (_selectedProcessId != value)
+                {
+                    _selectedProcessId = value;
+                    OnPropertyChanged("SelectedProcessId");
+                    if (value.HasValue)
+                    {
+                        _selectedProcess = AllProcesses?.FirstOrDefault(p => p.Id == value.Value);
+                    }
+                    else
+                    {
+                        _selectedProcess = null;
+                    }
+                    OnPropertyChanged("SelectedProcess");
                 }
             }
         }
@@ -256,7 +283,7 @@ namespace ProcessDirector.ViewModels
         {
             _settings = settings;
             _processService = new ProcessService();
-            _loggingService = new LoggingService(_settings.LogFolderPath);
+            _loggingService = new LoggingService(_settings.LogFolderPath, _settings.LogNetworkConnections);
             _allProcesses = new ObservableCollection<ProcessInfo>();
 
             RefreshCommand = new RelayCommand(_ => RefreshProcessesAsync());
@@ -293,6 +320,11 @@ namespace ProcessDirector.ViewModels
             LogDirectory = _loggingService.GetLogDirectory();
         }
 
+        public void UpdateNetworkLogging(bool enabled)
+        {
+            _loggingService.UpdateNetworkLogging(enabled);
+        }
+
         public void LogEvent(string eventType, string processName, int pid)
         {
             _loggingService.LogEvent(eventType, processName, pid);
@@ -306,6 +338,7 @@ namespace ProcessDirector.ViewModels
                 _settings = settingsWindow.GetUpdatedSettings();
                 SettingsManager.Save(_settings);
                 UpdateLogDirectory(_settings.LogFolderPath);
+                UpdateNetworkLogging(_settings.LogNetworkConnections);
             }
         }
 
@@ -321,21 +354,44 @@ namespace ProcessDirector.ViewModels
         {
             Application.Current.Dispatcher.Invoke(() =>
             {
-                int? savedId = _selectedProcess?.Id;
+                int? savedId = _selectedProcessId;
 
-                var newCollection = new ObservableCollection<ProcessInfo>();
-                foreach (var p in processes)
+                var existingDict = _allProcesses.ToDictionary(p => p.Id);
+
+                foreach (var newProc in processes)
                 {
-                    newCollection.Add(p);
+                    if (existingDict.TryGetValue(newProc.Id, out var existingProc))
+                    {
+                        existingProc.CpuUsage = newProc.CpuUsage;
+                        existingProc.MemoryUsage = newProc.MemoryUsage;
+                        existingProc.Name = newProc.Name;
+                        existingProc.Icon = newProc.Icon;
+                        existingProc.DisplayCategory = newProc.DisplayCategory;
+                        existingProc.ProcessBaseName = newProc.ProcessBaseName;
+                        existingProc.ExecutablePath = newProc.ExecutablePath;
+                    }
+                    else
+                    {
+                        _allProcesses.Add(newProc);
+                    }
                 }
 
-                AllProcesses = newCollection;
+                var toRemove = _allProcesses.Where(p => !processes.Any(np => np.Id == p.Id)).ToList();
+                foreach (var p in toRemove)
+                {
+                    _allProcesses.Remove(p);
+                }
 
-                ProcessCount = AllProcesses.Count;
+                ProcessCount = _allProcesses.Count;
 
                 if (savedId.HasValue)
                 {
-                    var restoredProcess = AllProcesses.FirstOrDefault(p => p.Id == savedId.Value);
+                    SelectedProcessId = savedId.Value;
+                }
+
+                if (_selectedProcessId.HasValue)
+                {
+                    var restoredProcess = _allProcesses.FirstOrDefault(p => p.Id == _selectedProcessId.Value);
                     if (restoredProcess != null)
                     {
                         _selectedProcess = restoredProcess;
@@ -350,6 +406,12 @@ namespace ProcessDirector.ViewModels
             if (_isRefreshing) return;
             _isRefreshing = true;
             StatusMessage = "Обновление...";
+
+            if (_isLoggingActive)
+            {
+                _loggingService.LogEvent("Refresh", "UserAction", 0);
+            }
+
             await Task.Run(() => _processService.GetProcesses());
             StatusMessage = "Готов";
             _isRefreshing = false;

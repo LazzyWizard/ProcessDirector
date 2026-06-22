@@ -28,5 +28,7 @@ namespace ProcessDirector.AppData
         public bool KillProcessHotkeyEnabled { get; set; } = false;
         public int KillProcessModifiers { get; set; } = 0;
         public Key KillProcessKey { get; set; } = Key.None;
+
+        public bool LogNetworkConnections { get; set; } = false;
     }
 }

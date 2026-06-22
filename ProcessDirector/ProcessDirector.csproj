@@ -187,6 +187,7 @@
     <Compile Include="AppData\SettingsModel.cs" />
     <Compile Include="Services\HotkeyManager.cs" />
     <Compile Include="Services\LoggingService.cs" />
+    <Compile Include="Services\NetworkMonitor.cs" />
     <Compile Include="Services\ProcessService.cs" />
     <Compile Include="Services\SettingsManager.cs" />
     <Compile Include="Services\TemperatureService.cs" />

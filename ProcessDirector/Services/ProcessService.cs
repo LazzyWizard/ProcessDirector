@@ -11,15 +11,17 @@ namespace ProcessDirector.Service
 {
     public class ProcessService : IDisposable
     {
-        private static Dictionary<int, ImageSource> _iconCache = new Dictionary<int, ImageSource>();
-        private static Dictionary<int, ProcessInfo> _processMap = new Dictionary<int, ProcessInfo>();
+        private static readonly Dictionary<string, ImageSource> _iconCacheByPath = new Dictionary<string, ImageSource>();
+        private static readonly Dictionary<int, ProcessInfo> _processMap = new Dictionary<int, ProcessInfo>();
         private static List<ProcessInfo> _allProcesses = new List<ProcessInfo>();
-        private static object _lockObject = new object();
+        private static readonly object _lockObject = new object();
+        private static readonly object _cpuLock = new object();
         private static System.Timers.Timer _updateTimer;
         private static bool _isInitialized = false;
-        private static Dictionary<int, float> _cpuCache = new Dictionary<int, float>();
-        private static Dictionary<int, DateTime> _cpuTimeCache = new Dictionary<int, DateTime>();
-        private static Dictionary<int, TimeSpan> _cpuTotalCache = new Dictionary<int, TimeSpan>();
+        private static readonly Dictionary<int, float> _cpuCache = new Dictionary<int, float>();
+        private static readonly Dictionary<int, DateTime> _cpuTimeCache = new Dictionary<int, DateTime>();
+        private static readonly Dictionary<int, TimeSpan> _cpuTotalCache = new Dictionary<int, TimeSpan>();
+        private static int _updateCounter = 0;
 
         [DllImport("user32.dll")]
         private static extern bool IsWindowVisible(IntPtr hWnd);
@@ -75,6 +77,30 @@ namespace ProcessDirector.Service
             catch { return 0; }
         }
 
+        private string GetExecutablePath(Process proc)
+        {
+            try
+            {
+                if (proc == null) return null;
+                if (proc.Id == 0 || proc.Id == 4) return null;
+
+                string path = proc.MainModule?.FileName;
+                return path;
+            }
+            catch (System.ComponentModel.Win32Exception)
+            {
+                return null;
+            }
+            catch (System.InvalidOperationException)
+            {
+                return null;
+            }
+            catch
+            {
+                return null;
+            }
+        }
+
         private float GetProcessCpuUsageFast(Process proc)
         {
             try
@@ -83,7 +109,7 @@ namespace ProcessDirector.Service
                 TimeSpan currentTotal = proc.TotalProcessorTime;
                 DateTime currentTime = DateTime.Now;
 
-                lock (_cpuTotalCache)
+                lock (_cpuLock)
                 {
                     if (_cpuTotalCache.ContainsKey(pid) && _cpuTimeCache.ContainsKey(pid))
                     {
@@ -150,7 +176,7 @@ namespace ProcessDirector.Service
             }
         }
 
-        private bool IsSystemProcess(Process proc)
+        private bool IsSystemProcess(Process proc, string exePath)
         {
             try
             {
@@ -160,18 +186,41 @@ namespace ProcessDirector.Service
 
                 if (systemNames.Contains(name)) return true;
 
-                string exePath = proc.MainModule?.FileName?.ToLower() ?? "";
-                if (exePath.Contains("system32") || exePath.Contains("syswow64")) return true;
+                if (!string.IsNullOrEmpty(exePath) &&
+                    (exePath.ToLower().Contains("system32") || exePath.ToLower().Contains("syswow64")))
+                    return true;
             }
             catch { }
             return false;
         }
 
-        private ProcessDisplayCategory GetDisplayCategory(Process proc)
+        private ProcessDisplayCategory GetDisplayCategory(Process proc, string exePath)
         {
-            if (IsSystemProcess(proc)) return ProcessDisplayCategory.Windows;
+            if (IsSystemProcess(proc, exePath)) return ProcessDisplayCategory.Windows;
             if (IsRealApplication(proc)) return ProcessDisplayCategory.Apps;
             return ProcessDisplayCategory.Background;
+        }
+
+        private ImageSource GetIconForProcess(string exePath)
+        {
+            if (string.IsNullOrEmpty(exePath))
+                return null;
+
+            if (_iconCacheByPath.TryGetValue(exePath, out ImageSource cached))
+                return cached;
+
+            try
+            {
+                var icon = IconHelper.GetProcessIcon(exePath);
+                if (icon != null)
+                {
+                    _iconCacheByPath[exePath] = icon;
+                    return icon;
+                }
+            }
+            catch { }
+
+            return null;
         }
 
         private void LoadCurrentProcesses()
@@ -196,7 +245,8 @@ namespace ProcessDirector.Service
                         string name = proc.ProcessName;
                         if (string.IsNullOrEmpty(name) || name == "Idle") continue;
 
-                        var processInfo = CreateProcessInfo(proc);
+                        string exePath = GetExecutablePath(proc);
+                        var processInfo = CreateProcessInfo(proc, exePath);
                         processes.Add(processInfo);
                         _processMap[proc.Id] = processInfo;
                     }
@@ -213,18 +263,21 @@ namespace ProcessDirector.Service
             }
         }
 
-        private ProcessInfo CreateProcessInfo(Process proc)
+        private ProcessInfo CreateProcessInfo(Process proc, string exePath)
         {
             string name = proc.ProcessName;
+            var icon = GetIconForProcess(exePath);
+
             return new ProcessInfo
             {
                 Id = proc.Id,
                 Name = name,
                 MemoryUsage = GetProcessMemory(proc),
                 CpuUsage = 0,
-                Icon = GetProcessIcon(proc),
-                DisplayCategory = GetDisplayCategory(proc),
-                ProcessBaseName = name
+                Icon = icon,
+                DisplayCategory = GetDisplayCategory(proc, exePath),
+                ProcessBaseName = name,
+                ExecutablePath = exePath
             };
         }
 
@@ -232,9 +285,12 @@ namespace ProcessDirector.Service
         {
             try
             {
+                _updateCounter++;
+
                 var runningProcesses = GetSafeProcesses();
                 var newProcessIds = new HashSet<int>();
-                var updatedProcesses = new List<ProcessInfo>();
+
+                bool calculateCpu = _updateCounter % 2 == 0;
 
                 foreach (var proc in runningProcesses)
                 {
@@ -245,45 +301,68 @@ namespace ProcessDirector.Service
 
                         int pid = proc.Id;
                         newProcessIds.Add(pid);
-                        float cpu = GetProcessCpuUsageFast(proc);
+
+                        float cpu = calculateCpu ? GetProcessCpuUsageFast(proc) : 0;
                         long memory = GetProcessMemory(proc);
 
                         if (_processMap.ContainsKey(pid))
                         {
                             var existing = _processMap[pid];
-                            existing.CpuUsage = cpu;
+                            if (calculateCpu)
+                                existing.CpuUsage = cpu;
                             existing.MemoryUsage = memory;
-                            updatedProcesses.Add(existing);
                         }
                         else
                         {
-                            var newProcess = CreateProcessInfo(proc);
-                            newProcess.CpuUsage = cpu;
+                            string exePath = GetExecutablePath(proc);
+                            var newProcess = CreateProcessInfo(proc, exePath);
+                            if (calculateCpu)
+                                newProcess.CpuUsage = cpu;
                             newProcess.MemoryUsage = memory;
                             _processMap[pid] = newProcess;
-                            updatedProcesses.Add(newProcess);
                         }
                     }
                     catch { }
                 }
 
-                var deadProcessIds = _processMap.Keys
-                    .Where(pid => !newProcessIds.Contains(pid))
-                    .ToList();
+                var deadProcessIds = new List<int>();
+                foreach (var pid in _processMap.Keys)
+                {
+                    if (!newProcessIds.Contains(pid))
+                        deadProcessIds.Add(pid);
+                }
 
                 foreach (var pid in deadProcessIds)
                 {
                     _processMap.Remove(pid);
-                    _cpuCache.Remove(pid);
-                    _cpuTotalCache.Remove(pid);
-                    _cpuTimeCache.Remove(pid);
+                    lock (_cpuLock)
+                    {
+                        _cpuCache.Remove(pid);
+                        _cpuTotalCache.Remove(pid);
+                        _cpuTimeCache.Remove(pid);
+                    }
                 }
 
-                lock (_lockObject)
+                bool shouldSort = deadProcessIds.Count > 0;
+                bool hasNewProcesses = false;
+
+                foreach (var pid in newProcessIds)
                 {
-                    _allProcesses = _processMap.Values
-                        .OrderByDescending(p => p.MemoryUsage)
-                        .ToList();
+                    if (_processMap.ContainsKey(pid) && !_allProcesses.Any(p => p.Id == pid))
+                    {
+                        hasNewProcesses = true;
+                        break;
+                    }
+                }
+
+                if (shouldSort || hasNewProcesses || _allProcesses.Count == 0)
+                {
+                    lock (_lockObject)
+                    {
+                        _allProcesses = _processMap.Values
+                            .OrderByDescending(p => p.MemoryUsage)
+                            .ToList();
+                    }
                 }
 
                 ProcessesUpdated?.Invoke(_allProcesses);
@@ -292,18 +371,6 @@ namespace ProcessDirector.Service
             {
                 Debug.WriteLine("Update error: " + ex.Message);
             }
-        }
-
-        private ImageSource GetProcessIcon(Process proc)
-        {
-            try
-            {
-                if (_iconCache.ContainsKey(proc.Id)) return _iconCache[proc.Id];
-                var icon = IconHelper.GetProcessIcon(proc);
-                if (icon != null) _iconCache[proc.Id] = icon;
-                return icon;
-            }
-            catch { return null; }
         }
 
         public List<ProcessInfo> GetProcesses()

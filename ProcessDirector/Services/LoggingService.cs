@@ -1,7 +1,9 @@
 ﻿using System;
+using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
 using System.Management;
+using System.Timers;
 
 namespace ProcessDirector.Services
 {
@@ -13,20 +15,65 @@ namespace ProcessDirector.Services
         private StreamWriter _logWriter;
         private ManagementEventWatcher _processStartWatcher;
         private ManagementEventWatcher _processStopWatcher;
+        private Dictionary<int, DateTime> _processStartTimes = new Dictionary<int, DateTime>();
+        private NetworkMonitor _networkMonitor;
+        private Timer _networkTimer;
+        private bool _logNetworkConnections = false;
 
         public event Action<string> NewLogEntry;
         public bool IsActive => _isActive;
 
-        public LoggingService(string logDirectory)
+        public LoggingService(string logDirectory, bool logNetworkConnections = false)
         {
             _logDirectory = logDirectory;
             if (!Directory.Exists(_logDirectory)) Directory.CreateDirectory(_logDirectory);
+            _logNetworkConnections = logNetworkConnections;
+            _networkMonitor = new NetworkMonitor();
+            _networkMonitor.NewConnectionDetected += OnNewConnectionDetected;
         }
 
         public void UpdateLogDirectory(string newPath)
         {
             _logDirectory = newPath;
             if (!Directory.Exists(_logDirectory)) Directory.CreateDirectory(_logDirectory);
+        }
+
+        public void UpdateNetworkLogging(bool enabled)
+        {
+            _logNetworkConnections = enabled;
+            if (!enabled)
+            {
+                _networkMonitor.Stop();
+                _networkTimer?.Stop();
+            }
+        }
+
+        private void OnNewConnectionDetected(string log)
+        {
+            WriteLog(log);
+            NewLogEntry?.Invoke(log);
+        }
+
+        private void StartNetworkMonitoring()
+        {
+            if (!_logNetworkConnections) return;
+            _networkMonitor.Start();
+            if (_networkTimer == null)
+            {
+                _networkTimer = new Timer(3000);
+                _networkTimer.Elapsed += (s, e) =>
+                {
+                    try { _networkMonitor.Update(); }
+                    catch { }
+                };
+                _networkTimer.Start();
+            }
+        }
+
+        private void StopNetworkMonitoring()
+        {
+            _networkMonitor.Stop();
+            _networkTimer?.Stop();
         }
 
         private void SetupWatchers()
@@ -46,6 +93,40 @@ namespace ProcessDirector.Services
             catch (Exception ex) { Debug.WriteLine("Watchers error: " + ex.Message); }
         }
 
+        private int GetParentProcessId(int pid)
+        {
+            try
+            {
+                using (var searcher = new ManagementObjectSearcher(
+                    "SELECT ParentProcessId FROM Win32_Process WHERE ProcessId = " + pid))
+                {
+                    foreach (var obj in searcher.Get())
+                    {
+                        return Convert.ToInt32(obj["ParentProcessId"]);
+                    }
+                }
+            }
+            catch { }
+            return 0;
+        }
+
+        private (string Name, int Pid) GetParentProcessInfo(int pid)
+        {
+            try
+            {
+                int parentPid = GetParentProcessId(pid);
+                if (parentPid == 0) return ("System", 0);
+
+                try
+                {
+                    var parentProc = Process.GetProcessById(parentPid);
+                    return (parentProc.ProcessName, parentPid);
+                }
+                catch { return ("Unknown", parentPid); }
+            }
+            catch { return ("Unknown", 0); }
+        }
+
         private void OnProcessStart(object sender, EventArrivedEventArgs e)
         {
             if (!_isActive) return;
@@ -54,7 +135,11 @@ namespace ProcessDirector.Services
                 string name = e.NewEvent.Properties["ProcessName"].Value?.ToString() ?? "";
                 int pid = Convert.ToInt32(e.NewEvent.Properties["ProcessID"].Value);
                 if (name.ToLower() == "processdirector") return;
-                WriteLog($"[{DateTime.Now:HH:mm:ss}] START | {name} (PID: {pid})");
+
+                _processStartTimes[pid] = DateTime.Now;
+
+                var parentInfo = GetParentProcessInfo(pid);
+                WriteLog($"[{DateTime.Now:HH:mm:ss}] START | {name} (PID: {pid}) [Parent: {parentInfo.Name} (PID: {parentInfo.Pid})]");
             }
             catch { }
         }
@@ -66,7 +151,17 @@ namespace ProcessDirector.Services
             {
                 string name = e.NewEvent.Properties["ProcessName"].Value?.ToString() ?? "";
                 int pid = Convert.ToInt32(e.NewEvent.Properties["ProcessID"].Value);
-                WriteLog($"[{DateTime.Now:HH:mm:ss}] STOP | {name} (PID: {pid})");
+
+                if (_processStartTimes.TryGetValue(pid, out DateTime startTime))
+                {
+                    TimeSpan duration = DateTime.Now - startTime;
+                    WriteLog($"[{DateTime.Now:HH:mm:ss}] STOP | {name} (PID: {pid}) [Duration: {duration.Hours:D2}:{duration.Minutes:D2}:{duration.Seconds:D2}]");
+                    _processStartTimes.Remove(pid);
+                }
+                else
+                {
+                    WriteLog($"[{DateTime.Now:HH:mm:ss}] STOP | {name} (PID: {pid})");
+                }
             }
             catch { }
         }
@@ -85,6 +180,7 @@ namespace ProcessDirector.Services
         {
             try
             {
+                _processStartTimes.Clear();
                 SetupWatchers();
                 string fileName = $"ProcessDirector_log_{DateTime.Now:yyyyMMdd_HHmmss}.txt";
                 _currentLogFilePath = Path.Combine(_logDirectory, fileName);
@@ -95,6 +191,7 @@ namespace ProcessDirector.Services
                 WriteLog("============================================================");
 
                 _isActive = true;
+                StartNetworkMonitoring();
                 return true;
             }
             catch (Exception ex) { Debug.WriteLine("Start error: " + ex.Message); return false; }
@@ -109,6 +206,8 @@ namespace ProcessDirector.Services
                 WriteLog("============================================================");
                 _logWriter?.Close();
                 _isActive = false;
+                _processStartTimes.Clear();
+                StopNetworkMonitoring();
                 return true;
             }
             catch { return false; }
@@ -135,6 +234,8 @@ namespace ProcessDirector.Services
             _logWriter?.Close();
             _processStartWatcher?.Stop();
             _processStopWatcher?.Stop();
+            _networkTimer?.Stop();
+            _networkMonitor?.Dispose();
         }
     }
 }

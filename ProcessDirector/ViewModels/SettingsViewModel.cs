@@ -188,6 +188,16 @@ namespace ProcessDirector.ViewModels
             }
         }
 
+        public bool LogNetworkConnections
+        {
+            get { return _settings.LogNetworkConnections; }
+            set
+            {
+                _settings.LogNetworkConnections = value;
+                OnPropertyChanged("LogNetworkConnections");
+            }
+        }
+
         public SettingsModel GetSettings()
         {
             return _settings;

@@ -1,4 +1,5 @@
 ﻿using System;
+using System.Collections.Generic;
 using System.Diagnostics;
 using System.Drawing;
 using System.IO;
@@ -9,32 +10,41 @@ namespace ProcessDirector.AppData
 {
     public static class IconHelper
     {
-        public static ImageSource GetProcessIcon(Process process)
+        private static readonly Dictionary<string, ImageSource> _iconCacheByPath = new Dictionary<string, ImageSource>();
+
+        public static ImageSource GetProcessIcon(string executablePath)
         {
+            if (string.IsNullOrEmpty(executablePath) || !File.Exists(executablePath))
+                return null;
+
+            if (_iconCacheByPath.TryGetValue(executablePath, out ImageSource cached))
+                return cached;
+
             try
             {
-                string exePath = null;
-
-                try
+                using (Icon icon = Icon.ExtractAssociatedIcon(executablePath))
                 {
-                    exePath = process.MainModule?.FileName;
-                }
-                catch { }
-
-                if (!string.IsNullOrEmpty(exePath) && File.Exists(exePath))
-                {
-                    using (Icon icon = Icon.ExtractAssociatedIcon(exePath))
+                    if (icon != null)
                     {
-                        if (icon != null)
-                        {
-                            return ConvertIconToImageSource(icon);
-                        }
+                        var imageSource = ConvertIconToImageSource(icon);
+                        _iconCacheByPath[executablePath] = imageSource;
+                        return imageSource;
                     }
                 }
             }
             catch { }
 
             return null;
+        }
+
+        public static ImageSource GetProcessIcon(Process process)
+        {
+            try
+            {
+                string exePath = process.MainModule?.FileName;
+                return GetProcessIcon(exePath);
+            }
+            catch { return null; }
         }
 
         private static BitmapImage ConvertIconToImageSource(Icon icon)
