@@ -348,26 +348,11 @@ namespace ProcessDirector.Service
                     }
                 }
 
-                bool shouldSort = deadProcessIds.Count > 0;
-                bool hasNewProcesses = false;
-
-                foreach (var pid in newProcessIds)
+                lock (_lockObject)
                 {
-                    if (_processMap.ContainsKey(pid) && !_allProcesses.Any(p => p.Id == pid))
-                    {
-                        hasNewProcesses = true;
-                        break;
-                    }
-                }
-
-                if (shouldSort || hasNewProcesses || _allProcesses.Count == 0)
-                {
-                    lock (_lockObject)
-                    {
-                        _allProcesses = _processMap.Values
-                            .OrderByDescending(p => p.MemoryUsage)
-                            .ToList();
-                    }
+                    _allProcesses = _processMap.Values
+                        .OrderByDescending(p => p.MemoryUsage)
+                        .ToList();
                 }
 
                 ProcessesUpdated?.Invoke(_allProcesses);
