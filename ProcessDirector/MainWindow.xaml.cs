@@ -1,10 +1,13 @@
 ﻿using System;
+using System.Collections.Generic;
 using System.Diagnostics;
 using System.Linq;
 using System.Runtime.InteropServices;
+using System.Threading.Tasks;
 using System.Windows;
 using System.Windows.Input;
 using System.Windows.Interop;
+using System.Windows.Media;
 using ProcessDirector.AppData;
 using ProcessDirector.Services;
 using ProcessDirector.ViewModels;
@@ -33,8 +36,15 @@ namespace ProcessDirector
         [DllImport("kernel32.dll")]
         private static extern bool CloseHandle(IntPtr hObject);
 
+        [DllImport("ntdll.dll")]
+        private static extern int NtSuspendProcess(IntPtr hProcess);
+
+        [DllImport("ntdll.dll")]
+        private static extern int NtResumeProcess(IntPtr hProcess);
+
         private const uint PROCESS_TERMINATE = 0x0001;
         private const uint PROCESS_QUERY_INFORMATION = 0x0400;
+        private const uint PROCESS_SUSPEND_RESUME = 0x0800;
 
         public MainWindow()
         {
@@ -159,6 +169,172 @@ namespace ProcessDirector
                     }
                 }
                 catch { }
+            }
+            catch { }
+        }
+
+        public void KillProcessTree(int pid)
+        {
+            try
+            {
+                var mainProc = Process.GetProcessById(pid);
+                mainProc.Kill();
+                mainProc.WaitForExit(100);
+            }
+            catch { }
+
+            try
+            {
+                IntPtr hProcess = OpenProcess(PROCESS_TERMINATE, false, (uint)pid);
+                if (hProcess != IntPtr.Zero)
+                {
+                    TerminateProcess(hProcess, 0);
+                    CloseHandle(hProcess);
+                }
+            }
+            catch { }
+
+            Task.Run(() =>
+            {
+                try
+                {
+                    var allProcesses = Process.GetProcesses();
+
+                    var childrenMap = new Dictionary<int, List<int>>();
+                    foreach (var proc in allProcesses)
+                    {
+                        try
+                        {
+                            int ppid = GetParentProcessId(proc.Id);
+                            if (!childrenMap.ContainsKey(ppid))
+                                childrenMap[ppid] = new List<int>();
+                            childrenMap[ppid].Add(proc.Id);
+                        }
+                        catch { }
+                    }
+
+                    var allChildren = new List<int>();
+                    var stack = new Stack<int>();
+                    stack.Push(pid);
+
+                    while (stack.Count > 0)
+                    {
+                        int current = stack.Pop();
+                        if (childrenMap.TryGetValue(current, out var childList))
+                        {
+                            foreach (int child in childList)
+                            {
+                                if (child != current && !allChildren.Contains(child))
+                                {
+                                    allChildren.Add(child);
+                                    stack.Push(child);
+                                }
+                            }
+                        }
+                    }
+
+                    foreach (var childPid in allChildren)
+                    {
+                        try
+                        {
+                            var childProc = Process.GetProcessById(childPid);
+                            childProc.Kill();
+                            if (!childProc.WaitForExit(500))
+                            {
+                                IntPtr hProcess = OpenProcess(PROCESS_TERMINATE, false, (uint)childPid);
+                                if (hProcess != IntPtr.Zero)
+                                {
+                                    TerminateProcess(hProcess, 0);
+                                    CloseHandle(hProcess);
+                                }
+                            }
+                        }
+                        catch { }
+                    }
+                }
+                catch { }
+            });
+        }
+
+        public void KillProcess(int pid)
+        {
+            try
+            {
+                var proc = Process.GetProcessById(pid);
+                proc.Kill();
+                proc.WaitForExit(2000);
+            }
+            catch { }
+        }
+
+        public void SuspendProcess(int pid)
+        {
+            try
+            {
+                IntPtr hProcess = OpenProcess(PROCESS_SUSPEND_RESUME, false, (uint)pid);
+                if (hProcess != IntPtr.Zero)
+                {
+                    NtSuspendProcess(hProcess);
+                    CloseHandle(hProcess);
+                }
+            }
+            catch { }
+        }
+
+        public void ResumeProcess(int pid)
+        {
+            try
+            {
+                IntPtr hProcess = OpenProcess(PROCESS_SUSPEND_RESUME, false, (uint)pid);
+                if (hProcess != IntPtr.Zero)
+                {
+                    NtResumeProcess(hProcess);
+                    CloseHandle(hProcess);
+                }
+            }
+            catch { }
+        }
+
+        public void OpenFileLocation(int pid)
+        {
+            try
+            {
+                var proc = Process.GetProcessById(pid);
+                string fileName = proc.MainModule?.FileName;
+                if (!string.IsNullOrEmpty(fileName) && System.IO.File.Exists(fileName))
+                {
+                    string argument = "/select, \"" + fileName + "\"";
+                    Process.Start("explorer.exe", argument);
+                }
+            }
+            catch { }
+        }
+
+        private int GetParentProcessId(int pid)
+        {
+            try
+            {
+                using (var searcher = new System.Management.ManagementObjectSearcher(
+                    "SELECT ParentProcessId FROM Win32_Process WHERE ProcessId = " + pid))
+                {
+                    foreach (var obj in searcher.Get())
+                    {
+                        return Convert.ToInt32(obj["ParentProcessId"]);
+                    }
+                }
+            }
+            catch { }
+            return 0;
+        }
+
+        public void ScrollLogsToEnd()
+        {
+            try
+            {
+                if (LogScrollViewer != null)
+                {
+                    LogScrollViewer.ScrollToEnd();
+                }
             }
             catch { }
         }

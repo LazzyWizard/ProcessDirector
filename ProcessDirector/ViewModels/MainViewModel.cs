@@ -3,7 +3,6 @@ using System.Collections.ObjectModel;
 using System.ComponentModel;
 using System.Diagnostics;
 using System.Linq;
-using System.Runtime.CompilerServices;
 using System.Threading.Tasks;
 using System.Windows;
 using System.Windows.Input;
@@ -45,6 +44,10 @@ namespace ProcessDirector.ViewModels
                     _selectedProcess = value;
                     OnPropertyChanged("SelectedProcess");
                     (KillProcessCommand as RelayCommand)?.RaiseCanExecuteChanged();
+                    (KillProcessTreeCommand as RelayCommand)?.RaiseCanExecuteChanged();
+                    (FreezeProcessCommand as RelayCommand)?.RaiseCanExecuteChanged();
+                    (UnfreezeProcessCommand as RelayCommand)?.RaiseCanExecuteChanged();
+                    (OpenFileLocationCommand as RelayCommand)?.RaiseCanExecuteChanged();
                 }
             }
         }
@@ -57,6 +60,22 @@ namespace ProcessDirector.ViewModels
             {
                 _logEntries = value;
                 OnPropertyChanged("LogEntries");
+            }
+        }
+
+        private string _selectedLogEntry = "";
+        public string SelectedLogEntry
+        {
+            get { return _selectedLogEntry; }
+            set
+            {
+                _selectedLogEntry = value;
+                OnPropertyChanged("SelectedLogEntry");
+                (KillProcessFromLogCommand as RelayCommand)?.RaiseCanExecuteChanged();
+                (KillProcessTreeFromLogCommand as RelayCommand)?.RaiseCanExecuteChanged();
+                (FreezeProcessFromLogCommand as RelayCommand)?.RaiseCanExecuteChanged();
+                (UnfreezeProcessFromLogCommand as RelayCommand)?.RaiseCanExecuteChanged();
+                (OpenFileLocationFromLogCommand as RelayCommand)?.RaiseCanExecuteChanged();
             }
         }
 
@@ -216,6 +235,17 @@ namespace ProcessDirector.ViewModels
 
         public ICommand RefreshCommand { get; private set; }
         public ICommand KillProcessCommand { get; private set; }
+        public ICommand KillProcessTreeCommand { get; private set; }
+        public ICommand FreezeProcessCommand { get; private set; }
+        public ICommand UnfreezeProcessCommand { get; private set; }
+        public ICommand OpenFileLocationCommand { get; private set; }
+
+        public ICommand KillProcessFromLogCommand { get; private set; }
+        public ICommand KillProcessTreeFromLogCommand { get; private set; }
+        public ICommand FreezeProcessFromLogCommand { get; private set; }
+        public ICommand UnfreezeProcessFromLogCommand { get; private set; }
+        public ICommand OpenFileLocationFromLogCommand { get; private set; }
+
         public ICommand StartLoggingCommand { get; private set; }
         public ICommand StopLoggingCommand { get; private set; }
         public ICommand OpenLogFolderCommand { get; private set; }
@@ -231,6 +261,17 @@ namespace ProcessDirector.ViewModels
 
             RefreshCommand = new RelayCommand(_ => RefreshProcessesAsync());
             KillProcessCommand = new RelayCommand(_ => KillSelectedProcess(), _ => SelectedProcess != null);
+            KillProcessTreeCommand = new RelayCommand(_ => KillProcessTree(), _ => SelectedProcess != null);
+            FreezeProcessCommand = new RelayCommand(_ => FreezeProcess(), _ => SelectedProcess != null);
+            UnfreezeProcessCommand = new RelayCommand(_ => UnfreezeProcess(), _ => SelectedProcess != null);
+            OpenFileLocationCommand = new RelayCommand(_ => OpenFileLocation(), _ => SelectedProcess != null);
+
+            KillProcessFromLogCommand = new RelayCommand(_ => KillProcessFromLog(), _ => !string.IsNullOrEmpty(SelectedLogEntry));
+            KillProcessTreeFromLogCommand = new RelayCommand(_ => KillProcessTreeFromLog(), _ => !string.IsNullOrEmpty(SelectedLogEntry));
+            FreezeProcessFromLogCommand = new RelayCommand(_ => FreezeProcessFromLog(), _ => !string.IsNullOrEmpty(SelectedLogEntry));
+            UnfreezeProcessFromLogCommand = new RelayCommand(_ => UnfreezeProcessFromLog(), _ => !string.IsNullOrEmpty(SelectedLogEntry));
+            OpenFileLocationFromLogCommand = new RelayCommand(_ => OpenFileLocationFromLog(), _ => !string.IsNullOrEmpty(SelectedLogEntry));
+
             StartLoggingCommand = new RelayCommand(_ => StartLogging());
             StopLoggingCommand = new RelayCommand(_ => StopLogging());
             OpenLogFolderCommand = new RelayCommand(_ => OpenLogFolder());
@@ -282,17 +323,19 @@ namespace ProcessDirector.ViewModels
             {
                 int? savedId = _selectedProcess?.Id;
 
-                _allProcesses.Clear();
+                var newCollection = new ObservableCollection<ProcessInfo>();
                 foreach (var p in processes)
                 {
-                    _allProcesses.Add(p);
+                    newCollection.Add(p);
                 }
 
-                ProcessCount = _allProcesses.Count;
+                AllProcesses = newCollection;
+
+                ProcessCount = AllProcesses.Count;
 
                 if (savedId.HasValue)
                 {
-                    var restoredProcess = _allProcesses.FirstOrDefault(p => p.Id == savedId.Value);
+                    var restoredProcess = AllProcesses.FirstOrDefault(p => p.Id == savedId.Value);
                     if (restoredProcess != null)
                     {
                         _selectedProcess = restoredProcess;
@@ -314,12 +357,7 @@ namespace ProcessDirector.ViewModels
 
         private void KillSelectedProcess()
         {
-            if (SelectedProcess == null)
-            {
-                StatusMessage = "Выберите процесс";
-                return;
-            }
-
+            if (SelectedProcess == null) return;
             string name = SelectedProcess.Name.ToLower();
             if (name.Contains("svchost") || name.Contains("csrss") || name.Contains("services") ||
                 name.Contains("lsass") || name.Contains("winlogon") || name.Contains("system"))
@@ -327,7 +365,6 @@ namespace ProcessDirector.ViewModels
                 StatusMessage = "Невозможно завершить системный процесс: " + SelectedProcess.Name;
                 return;
             }
-
             try
             {
                 if (_processService.KillProcess(SelectedProcess.Id))
@@ -347,14 +384,153 @@ namespace ProcessDirector.ViewModels
             }
         }
 
+        private void KillProcessTree()
+        {
+            if (SelectedProcess == null) return;
+            var mainWindow = Application.Current.MainWindow as MainWindow;
+            if (mainWindow != null)
+            {
+                mainWindow.KillProcessTree(SelectedProcess.Id);
+                if (_isLoggingActive) _loggingService.LogEvent("KillTree", SelectedProcess.Name, SelectedProcess.Id);
+                StatusMessage = "Дерево процессов " + SelectedProcess.Name + " завершено";
+                SelectedProcess = null;
+            }
+        }
+
+        private void FreezeProcess()
+        {
+            if (SelectedProcess == null) return;
+            var mainWindow = Application.Current.MainWindow as MainWindow;
+            if (mainWindow != null)
+            {
+                mainWindow.SuspendProcess(SelectedProcess.Id);
+                if (_isLoggingActive) _loggingService.LogEvent("Freeze", SelectedProcess.Name, SelectedProcess.Id);
+                StatusMessage = "Процесс " + SelectedProcess.Name + " заморожен";
+            }
+        }
+
+        private void UnfreezeProcess()
+        {
+            if (SelectedProcess == null) return;
+            var mainWindow = Application.Current.MainWindow as MainWindow;
+            if (mainWindow != null)
+            {
+                mainWindow.ResumeProcess(SelectedProcess.Id);
+                if (_isLoggingActive) _loggingService.LogEvent("Unfreeze", SelectedProcess.Name, SelectedProcess.Id);
+                StatusMessage = "Процесс " + SelectedProcess.Name + " разморожен";
+            }
+        }
+
+        private void OpenFileLocation()
+        {
+            if (SelectedProcess == null) return;
+            var mainWindow = Application.Current.MainWindow as MainWindow;
+            if (mainWindow != null)
+            {
+                mainWindow.OpenFileLocation(SelectedProcess.Id);
+            }
+        }
+
+        private int ExtractPidFromLog(string logEntry)
+        {
+            if (string.IsNullOrEmpty(logEntry)) return 0;
+            int start = logEntry.IndexOf("(PID: ");
+            if (start == -1) return 0;
+            start += 6;
+            int end = logEntry.IndexOf(")", start);
+            if (end == -1) return 0;
+            string pidStr = logEntry.Substring(start, end - start);
+            if (int.TryParse(pidStr, out int pid))
+                return pid;
+            return 0;
+        }
+
+        private string ExtractNameFromLog(string logEntry)
+        {
+            if (string.IsNullOrEmpty(logEntry)) return "";
+            int start = logEntry.IndexOf("| ");
+            if (start == -1) return "";
+            start += 2;
+            int end = logEntry.IndexOf(" (PID:", start);
+            if (end == -1) return "";
+            return logEntry.Substring(start, end - start).Trim();
+        }
+
+        private void KillProcessFromLog()
+        {
+            int pid = ExtractPidFromLog(SelectedLogEntry);
+            string name = ExtractNameFromLog(SelectedLogEntry);
+            if (pid <= 0) return;
+            var mainWindow = Application.Current.MainWindow as MainWindow;
+            if (mainWindow != null)
+            {
+                mainWindow.KillProcess(pid);
+                if (_isLoggingActive) _loggingService.LogEvent("UserKill", name, pid);
+                StatusMessage = "Процесс " + name + " завершён (из лога)";
+            }
+        }
+
+        private void KillProcessTreeFromLog()
+        {
+            int pid = ExtractPidFromLog(SelectedLogEntry);
+            string name = ExtractNameFromLog(SelectedLogEntry);
+            if (pid <= 0) return;
+            var mainWindow = Application.Current.MainWindow as MainWindow;
+            if (mainWindow != null)
+            {
+                mainWindow.KillProcessTree(pid);
+                if (_isLoggingActive) _loggingService.LogEvent("KillTree", name, pid);
+                StatusMessage = "Дерево процессов " + name + " завершено (из лога)";
+            }
+        }
+
+        private void FreezeProcessFromLog()
+        {
+            int pid = ExtractPidFromLog(SelectedLogEntry);
+            string name = ExtractNameFromLog(SelectedLogEntry);
+            if (pid <= 0) return;
+            var mainWindow = Application.Current.MainWindow as MainWindow;
+            if (mainWindow != null)
+            {
+                mainWindow.SuspendProcess(pid);
+                if (_isLoggingActive) _loggingService.LogEvent("Freeze", name, pid);
+                StatusMessage = "Процесс " + name + " заморожен (из лога)";
+            }
+        }
+
+        private void UnfreezeProcessFromLog()
+        {
+            int pid = ExtractPidFromLog(SelectedLogEntry);
+            string name = ExtractNameFromLog(SelectedLogEntry);
+            if (pid <= 0) return;
+            var mainWindow = Application.Current.MainWindow as MainWindow;
+            if (mainWindow != null)
+            {
+                mainWindow.ResumeProcess(pid);
+                if (_isLoggingActive) _loggingService.LogEvent("Unfreeze", name, pid);
+                StatusMessage = "Процесс " + name + " разморожен (из лога)";
+            }
+        }
+
+        private void OpenFileLocationFromLog()
+        {
+            int pid = ExtractPidFromLog(SelectedLogEntry);
+            if (pid <= 0) return;
+            var mainWindow = Application.Current.MainWindow as MainWindow;
+            if (mainWindow != null)
+            {
+                mainWindow.OpenFileLocation(pid);
+            }
+        }
+
         private void OnNewLogEntry(string log)
         {
             Application.Current.Dispatcher.Invoke(() =>
             {
-                _logEntries.Add(log);
+                _logEntries.Insert(0, log);
                 if (_logEntries.Count > 1000)
                 {
-                    _logEntries.RemoveAt(0);
+                    _logEntries.RemoveAt(_logEntries.Count - 1);
                 }
                 CurrentLogFilePath = _loggingService.GetCurrentLogFilePath();
             });
