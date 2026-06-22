@@ -26,6 +26,14 @@ namespace ProcessDirector.Service
         [DllImport("user32.dll")]
         private static extern bool IsWindowVisible(IntPtr hWnd);
 
+        [DllImport("user32.dll")]
+        private static extern bool EnumWindows(EnumWindowsProc lpEnumFunc, IntPtr lParam);
+
+        [DllImport("user32.dll")]
+        private static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint lpdwProcessId);
+
+        private delegate bool EnumWindowsProc(IntPtr hWnd, IntPtr lParam);
+
         public event Action<List<ProcessInfo>> ProcessesUpdated;
         public event Action<string> LoadingStatus;
 
@@ -83,17 +91,7 @@ namespace ProcessDirector.Service
             {
                 if (proc == null) return null;
                 if (proc.Id == 0 || proc.Id == 4) return null;
-
-                string path = proc.MainModule?.FileName;
-                return path;
-            }
-            catch (System.ComponentModel.Win32Exception)
-            {
-                return null;
-            }
-            catch (System.InvalidOperationException)
-            {
-                return null;
+                return proc.MainModule?.FileName;
             }
             catch
             {
@@ -145,7 +143,21 @@ namespace ProcessDirector.Service
         {
             try
             {
-                return proc.MainWindowHandle != IntPtr.Zero && IsWindowVisible(proc.MainWindowHandle);
+                int pid = proc.Id;
+                bool found = false;
+
+                EnumWindows((hWnd, lParam) =>
+                {
+                    GetWindowThreadProcessId(hWnd, out uint windowPid);
+                    if (windowPid == pid && IsWindowVisible(hWnd))
+                    {
+                        found = true;
+                        return false;
+                    }
+                    return true;
+                }, IntPtr.Zero);
+
+                return found;
             }
             catch
             {
@@ -157,18 +169,7 @@ namespace ProcessDirector.Service
         {
             try
             {
-                string name = proc.ProcessName.ToLower();
-                string[] excluded = { "svchost", "csrss", "services", "lsass", "winlogon", "system",
-                    "smss", "wininit", "spoolsv", "dwm", "taskhost", "runtimebroker", "ctfmon", "sihost",
-                    "explorer", "systemsettings", "searchui", "nvidia", "textinputhost", "applicationframehost" };
-
-                foreach (var ex in excluded)
-                    if (name.Contains(ex)) return false;
-
-                if (HasVisibleWindow(proc))
-                    return true;
-
-                return false;
+                return HasVisibleWindow(proc);
             }
             catch
             {
@@ -182,7 +183,8 @@ namespace ProcessDirector.Service
             {
                 string name = proc.ProcessName.ToLower();
                 string[] systemNames = { "svchost", "csrss", "services", "lsass", "winlogon", "system",
-                    "smss", "wininit", "spoolsv", "dwm", "taskhost", "runtimebroker", "ctfmon", "sihost" };
+                    "smss", "wininit", "spoolsv", "dwm", "taskhost", "runtimebroker", "ctfmon", "sihost",
+                    "explorer", "systemsettings", "searchui", "nvidia", "textinputhost", "applicationframehost" };
 
                 if (systemNames.Contains(name)) return true;
 
@@ -304,6 +306,8 @@ namespace ProcessDirector.Service
 
                         float cpu = calculateCpu ? GetProcessCpuUsageFast(proc) : 0;
                         long memory = GetProcessMemory(proc);
+                        string exePath = GetExecutablePath(proc);
+                        var category = GetDisplayCategory(proc, exePath);
 
                         if (_processMap.ContainsKey(pid))
                         {
@@ -311,10 +315,11 @@ namespace ProcessDirector.Service
                             if (calculateCpu)
                                 existing.CpuUsage = cpu;
                             existing.MemoryUsage = memory;
+                            existing.DisplayCategory = category;
+                            existing.ExecutablePath = exePath;
                         }
                         else
                         {
-                            string exePath = GetExecutablePath(proc);
                             var newProcess = CreateProcessInfo(proc, exePath);
                             if (calculateCpu)
                                 newProcess.CpuUsage = cpu;

@@ -356,48 +356,36 @@ namespace ProcessDirector.ViewModels
             {
                 int? savedId = _selectedProcessId;
 
-                var existingDict = _allProcesses.ToDictionary(p => p.Id);
-
-                foreach (var newProc in processes)
+                var newCollection = new ObservableCollection<ProcessInfo>();
+                foreach (var p in processes)
                 {
-                    if (existingDict.TryGetValue(newProc.Id, out var existingProc))
-                    {
-                        existingProc.CpuUsage = newProc.CpuUsage;
-                        existingProc.MemoryUsage = newProc.MemoryUsage;
-                        existingProc.Name = newProc.Name;
-                        existingProc.Icon = newProc.Icon;
-                        existingProc.DisplayCategory = newProc.DisplayCategory;
-                        existingProc.ProcessBaseName = newProc.ProcessBaseName;
-                        existingProc.ExecutablePath = newProc.ExecutablePath;
-                    }
-                    else
-                    {
-                        _allProcesses.Add(newProc);
-                    }
+                    newCollection.Add(p);
                 }
 
-                var toRemove = _allProcesses.Where(p => !processes.Any(np => np.Id == p.Id)).ToList();
-                foreach (var p in toRemove)
-                {
-                    _allProcesses.Remove(p);
-                }
-
-                ProcessCount = _allProcesses.Count;
+                AllProcesses = newCollection;
+                ProcessCount = AllProcesses.Count;
 
                 if (savedId.HasValue)
                 {
-                    SelectedProcessId = savedId.Value;
-                }
-
-                if (_selectedProcessId.HasValue)
-                {
-                    var restoredProcess = _allProcesses.FirstOrDefault(p => p.Id == _selectedProcessId.Value);
+                    var restoredProcess = AllProcesses.FirstOrDefault(p => p.Id == savedId.Value);
                     if (restoredProcess != null)
                     {
                         _selectedProcess = restoredProcess;
                         OnPropertyChanged("SelectedProcess");
                     }
+                    else
+                    {
+                        _selectedProcess = null;
+                        OnPropertyChanged("SelectedProcess");
+                    }
                 }
+                else
+                {
+                    _selectedProcess = null;
+                    OnPropertyChanged("SelectedProcess");
+                }
+
+                CommandManager.InvalidateRequerySuggested();
             });
         }
 
