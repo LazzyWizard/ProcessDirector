@@ -1,709 +1,408 @@
 ﻿using System;
-using System.Collections.ObjectModel;
-using System.ComponentModel;
+using System.Collections.Generic;
 using System.Diagnostics;
 using System.Linq;
+using System.Runtime.InteropServices;
 using System.Threading.Tasks;
 using System.Windows;
 using System.Windows.Input;
-using System.Windows.Threading;
+using System.Windows.Interop;
 using ProcessDirector.AppData;
-using ProcessDirector.Service;
 using ProcessDirector.Services;
+using ProcessDirector.ViewModels;
 
-namespace ProcessDirector.ViewModels
+namespace ProcessDirector
 {
-    public class MainViewModel : INotifyPropertyChanged, IDisposable
+    public partial class MainWindow : Window
     {
-        private ProcessService _processService;
-        private TemperatureService _temperatureService;
-        private LoggingService _loggingService;
-        private DispatcherTimer _temperatureTimer;
-        private bool _isRefreshing = false;
+        private MainViewModel _viewModel;
         private SettingsModel _settings;
+        private HotkeyManager _hotkeyManager;
+        private HwndSource _hwndSource;
 
-        private ObservableCollection<ProcessInfo> _allProcesses;
-        public ObservableCollection<ProcessInfo> AllProcesses
+        [DllImport("user32.dll")]
+        private static extern IntPtr GetForegroundWindow();
+
+        [DllImport("user32.dll")]
+        private static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint lpdwProcessId);
+
+        [DllImport("kernel32.dll")]
+        private static extern IntPtr OpenProcess(uint dwDesiredAccess, bool bInheritHandle, uint dwProcessId);
+
+        [DllImport("kernel32.dll")]
+        private static extern bool TerminateProcess(IntPtr hProcess, uint uExitCode);
+
+        [DllImport("kernel32.dll")]
+        private static extern bool CloseHandle(IntPtr hObject);
+
+        [DllImport("ntdll.dll")]
+        private static extern int NtSuspendProcess(IntPtr hProcess);
+
+        [DllImport("ntdll.dll")]
+        private static extern int NtResumeProcess(IntPtr hProcess);
+
+        private const uint PROCESS_TERMINATE = 0x0001;
+        private const uint PROCESS_QUERY_INFORMATION = 0x0400;
+        private const uint PROCESS_SUSPEND_RESUME = 0x0800;
+
+        public MainWindow()
         {
-            get { return _allProcesses; }
-            set
+            InitializeComponent();
+
+            _settings = SettingsManager.Load();
+            _viewModel = new MainViewModel(_settings);
+            DataContext = _viewModel;
+
+            this.Closed += MainWindow_Closed;
+            this.SourceInitialized += MainWindow_SourceInitialized;
+        }
+
+        private void MainWindow_SourceInitialized(object sender, EventArgs e)
+        {
+            Debug.WriteLine("SourceInitialized called");
+
+            _hwndSource = PresentationSource.FromVisual(this) as HwndSource;
+            if (_hwndSource != null)
             {
-                _allProcesses = value;
-                OnPropertyChanged("AllProcesses");
-            }
-        }
-
-        private ProcessInfo _selectedProcess;
-        public ProcessInfo SelectedProcess
-        {
-            get { return _selectedProcess; }
-            set
-            {
-                if (_selectedProcess != value)
-                {
-                    _selectedProcess = value;
-                    OnPropertyChanged("SelectedProcess");
-                    if (value != null)
-                        SelectedProcessId = value.Id;
-                    else
-                        SelectedProcessId = null;
-                    (KillProcessCommand as RelayCommand)?.RaiseCanExecuteChanged();
-                    (KillProcessTreeCommand as RelayCommand)?.RaiseCanExecuteChanged();
-                    (FreezeProcessCommand as RelayCommand)?.RaiseCanExecuteChanged();
-                    (UnfreezeProcessCommand as RelayCommand)?.RaiseCanExecuteChanged();
-                    (OpenFileLocationCommand as RelayCommand)?.RaiseCanExecuteChanged();
-                }
-            }
-        }
-
-        private int? _selectedProcessId;
-        public int? SelectedProcessId
-        {
-            get { return _selectedProcessId; }
-            set
-            {
-                if (_selectedProcessId != value)
-                {
-                    _selectedProcessId = value;
-                    OnPropertyChanged("SelectedProcessId");
-                    if (value.HasValue)
-                    {
-                        _selectedProcess = AllProcesses?.FirstOrDefault(p => p.Id == value.Value);
-                    }
-                    else
-                    {
-                        _selectedProcess = null;
-                    }
-                    OnPropertyChanged("SelectedProcess");
-                }
-            }
-        }
-
-        private ObservableCollection<string> _logEntries = new ObservableCollection<string>();
-        public ObservableCollection<string> LogEntries
-        {
-            get { return _logEntries; }
-            set
-            {
-                _logEntries = value;
-                OnPropertyChanged("LogEntries");
-            }
-        }
-
-        private string _selectedLogEntry = "";
-        public string SelectedLogEntry
-        {
-            get { return _selectedLogEntry; }
-            set
-            {
-                _selectedLogEntry = value;
-                OnPropertyChanged("SelectedLogEntry");
-                (KillProcessFromLogCommand as RelayCommand)?.RaiseCanExecuteChanged();
-                (KillProcessTreeFromLogCommand as RelayCommand)?.RaiseCanExecuteChanged();
-                (FreezeProcessFromLogCommand as RelayCommand)?.RaiseCanExecuteChanged();
-                (UnfreezeProcessFromLogCommand as RelayCommand)?.RaiseCanExecuteChanged();
-                (OpenFileLocationFromLogCommand as RelayCommand)?.RaiseCanExecuteChanged();
-            }
-        }
-
-        private string _currentLogFilePath;
-        public string CurrentLogFilePath
-        {
-            get { return _currentLogFilePath; }
-            set
-            {
-                _currentLogFilePath = value;
-                OnPropertyChanged("CurrentLogFilePath");
-            }
-        }
-
-        private string _logDirectory;
-        public string LogDirectory
-        {
-            get { return _logDirectory; }
-            set
-            {
-                _logDirectory = value;
-                OnPropertyChanged("LogDirectory");
-            }
-        }
-
-        private string _statusMessage = "Готов";
-        public string StatusMessage
-        {
-            get { return _statusMessage; }
-            set
-            {
-                _statusMessage = value;
-                OnPropertyChanged("StatusMessage");
-            }
-        }
-
-        private string _cpuTemperature = "--°C";
-        public string CpuTemperature
-        {
-            get { return _cpuTemperature; }
-            set
-            {
-                _cpuTemperature = value;
-                OnPropertyChanged("CpuTemperature");
-            }
-        }
-
-        private string _gpuTemperature = "--°C";
-        public string GpuTemperature
-        {
-            get { return _gpuTemperature; }
-            set
-            {
-                _gpuTemperature = value;
-                OnPropertyChanged("GpuTemperature");
-            }
-        }
-
-        private string _cpuLoad = "--%";
-        public string CpuLoad
-        {
-            get { return _cpuLoad; }
-            set
-            {
-                _cpuLoad = value;
-                OnPropertyChanged("CpuLoad");
-            }
-        }
-
-        private string _gpuLoad = "--%";
-        public string GpuLoad
-        {
-            get { return _gpuLoad; }
-            set
-            {
-                _gpuLoad = value;
-                OnPropertyChanged("GpuLoad");
-            }
-        }
-
-        private string _ramUsage = "0%";
-        public string RamUsage
-        {
-            get { return _ramUsage; }
-            set
-            {
-                _ramUsage = value;
-                OnPropertyChanged("RamUsage");
-            }
-        }
-
-        private double _cpuLoadValue;
-        public double CpuLoadValue
-        {
-            get { return _cpuLoadValue; }
-            set
-            {
-                _cpuLoadValue = value;
-                OnPropertyChanged("CpuLoadValue");
-            }
-        }
-
-        private double _gpuLoadValue;
-        public double GpuLoadValue
-        {
-            get { return _gpuLoadValue; }
-            set
-            {
-                _gpuLoadValue = value;
-                OnPropertyChanged("GpuLoadValue");
-            }
-        }
-
-        private double _ramUsageValue;
-        public double RamUsageValue
-        {
-            get { return _ramUsageValue; }
-            set
-            {
-                _ramUsageValue = value;
-                OnPropertyChanged("RamUsageValue");
-            }
-        }
-
-        private bool _isLoggingActive = false;
-        public bool IsLoggingActive
-        {
-            get { return _isLoggingActive; }
-            set
-            {
-                _isLoggingActive = value;
-                OnPropertyChanged("IsLoggingActive");
-            }
-        }
-
-        private string _logStatus = "Логирование остановлено";
-        public string LogStatus
-        {
-            get { return _logStatus; }
-            set
-            {
-                _logStatus = value;
-                OnPropertyChanged("LogStatus");
-            }
-        }
-
-        private int _processCount;
-        public int ProcessCount
-        {
-            get { return _processCount; }
-            set
-            {
-                _processCount = value;
-                OnPropertyChanged("ProcessCount");
-            }
-        }
-
-        public ICommand RefreshCommand { get; private set; }
-        public ICommand KillProcessCommand { get; private set; }
-        public ICommand KillProcessTreeCommand { get; private set; }
-        public ICommand FreezeProcessCommand { get; private set; }
-        public ICommand UnfreezeProcessCommand { get; private set; }
-        public ICommand OpenFileLocationCommand { get; private set; }
-
-        public ICommand KillProcessFromLogCommand { get; private set; }
-        public ICommand KillProcessTreeFromLogCommand { get; private set; }
-        public ICommand FreezeProcessFromLogCommand { get; private set; }
-        public ICommand UnfreezeProcessFromLogCommand { get; private set; }
-        public ICommand OpenFileLocationFromLogCommand { get; private set; }
-
-        public ICommand StartLoggingCommand { get; private set; }
-        public ICommand StopLoggingCommand { get; private set; }
-        public ICommand OpenLogFolderCommand { get; private set; }
-        public ICommand OpenCurrentLogCommand { get; private set; }
-        public ICommand OpenSettingsCommand { get; private set; }
-
-        public MainViewModel(SettingsModel settings)
-        {
-            _settings = settings;
-            _processService = new ProcessService();
-            _loggingService = new LoggingService(_settings.LogFolderPath, _settings.LogNetworkConnections);
-            _allProcesses = new ObservableCollection<ProcessInfo>();
-
-            RefreshCommand = new RelayCommand(_ => RefreshProcessesAsync());
-            KillProcessCommand = new RelayCommand(_ => KillSelectedProcess(), _ => SelectedProcess != null);
-            KillProcessTreeCommand = new RelayCommand(_ => KillProcessTree(), _ => SelectedProcess != null);
-            FreezeProcessCommand = new RelayCommand(_ => FreezeProcess(), _ => SelectedProcess != null);
-            UnfreezeProcessCommand = new RelayCommand(_ => UnfreezeProcess(), _ => SelectedProcess != null);
-            OpenFileLocationCommand = new RelayCommand(_ => OpenFileLocation(), _ => SelectedProcess != null);
-
-            KillProcessFromLogCommand = new RelayCommand(_ => KillProcessFromLog(), _ => !string.IsNullOrEmpty(SelectedLogEntry));
-            KillProcessTreeFromLogCommand = new RelayCommand(_ => KillProcessTreeFromLog(), _ => !string.IsNullOrEmpty(SelectedLogEntry));
-            FreezeProcessFromLogCommand = new RelayCommand(_ => FreezeProcessFromLog(), _ => !string.IsNullOrEmpty(SelectedLogEntry));
-            UnfreezeProcessFromLogCommand = new RelayCommand(_ => UnfreezeProcessFromLog(), _ => !string.IsNullOrEmpty(SelectedLogEntry));
-            OpenFileLocationFromLogCommand = new RelayCommand(_ => OpenFileLocationFromLog(), _ => !string.IsNullOrEmpty(SelectedLogEntry));
-
-            StartLoggingCommand = new RelayCommand(_ => StartLogging());
-            StopLoggingCommand = new RelayCommand(_ => StopLogging());
-            OpenLogFolderCommand = new RelayCommand(_ => OpenLogFolder());
-            OpenCurrentLogCommand = new RelayCommand(_ => OpenCurrentLogFile());
-            OpenSettingsCommand = new RelayCommand(_ => OpenSettings());
-
-            _processService.ProcessesUpdated += OnProcessesUpdated;
-            _loggingService.NewLogEntry += OnNewLogEntry;
-            _processService.LoadingStatus += OnLoadingStatus;
-
-            InitializeTemperatureMonitoring();
-            LogDirectory = _loggingService.GetLogDirectory();
-        }
-
-        public void UpdateLogDirectory(string newPath)
-        {
-            _settings.LogFolderPath = newPath;
-            _loggingService.UpdateLogDirectory(newPath);
-            LogDirectory = _loggingService.GetLogDirectory();
-        }
-
-        public void UpdateNetworkLogging(bool enabled)
-        {
-            _loggingService.UpdateNetworkLogging(enabled);
-        }
-
-        public void LogEvent(string eventType, string processName, int pid)
-        {
-            _loggingService.LogEvent(eventType, processName, pid);
-        }
-
-        private void OpenSettings()
-        {
-            var settingsWindow = new SettingsWindow(_settings);
-            if (settingsWindow.ShowDialog() == true)
-            {
-                _settings = settingsWindow.GetUpdatedSettings();
-                SettingsManager.Save(_settings);
-                UpdateLogDirectory(_settings.LogFolderPath);
-                UpdateNetworkLogging(_settings.LogNetworkConnections);
-            }
-        }
-
-        private void OnLoadingStatus(string status)
-        {
-            Application.Current.Dispatcher.Invoke(() =>
-            {
-                StatusMessage = status;
-            });
-        }
-
-        private void OnProcessesUpdated(System.Collections.Generic.List<ProcessInfo> processes)
-        {
-            Application.Current.Dispatcher.Invoke(() =>
-            {
-                int? savedId = _selectedProcessId;
-
-                var newCollection = new ObservableCollection<ProcessInfo>();
-                foreach (var p in processes)
-                {
-                    newCollection.Add(p);
-                }
-
-                AllProcesses = newCollection;
-                ProcessCount = AllProcesses.Count;
-
-                if (savedId.HasValue)
-                {
-                    var restoredProcess = AllProcesses.FirstOrDefault(p => p.Id == savedId.Value);
-                    if (restoredProcess != null)
-                    {
-                        _selectedProcess = restoredProcess;
-                        OnPropertyChanged("SelectedProcess");
-                    }
-                    else
-                    {
-                        _selectedProcess = null;
-                        OnPropertyChanged("SelectedProcess");
-                    }
-                }
-                else
-                {
-                    _selectedProcess = null;
-                    OnPropertyChanged("SelectedProcess");
-                }
-
-                CommandManager.InvalidateRequerySuggested();
-            });
-        }
-
-        private async void RefreshProcessesAsync()
-        {
-            if (_isRefreshing) return;
-            _isRefreshing = true;
-            StatusMessage = "Обновление...";
-
-            if (_isLoggingActive)
-            {
-                _loggingService.LogEvent("Refresh", "UserAction", 0);
+                Debug.WriteLine("HwndSource created");
+                _hwndSource.AddHook(HwndHook);
             }
 
-            await Task.Run(() => _processService.GetProcesses());
-            StatusMessage = "Готов";
-            _isRefreshing = false;
+            _hotkeyManager = new HotkeyManager(new WindowInteropHelper(this).Handle);
+            RegisterHotkeys();
         }
 
-        private void KillSelectedProcess()
+        private IntPtr HwndHook(IntPtr hwnd, int msg, IntPtr wParam, IntPtr lParam, ref bool handled)
         {
-            if (SelectedProcess == null) return;
-            string name = SelectedProcess.Name.ToLower();
-            if (name.Contains("svchost") || name.Contains("csrss") || name.Contains("services") ||
-                name.Contains("lsass") || name.Contains("winlogon") || name.Contains("system"))
+            const int WM_HOTKEY = 0x0312;
+
+            if (msg == WM_HOTKEY)
             {
-                StatusMessage = "Невозможно завершить системный процесс: " + SelectedProcess.Name;
+                int id = wParam.ToInt32();
+                Debug.WriteLine($"WM_HOTKEY received, id: {id}");
+                _hotkeyManager?.ProcessHotkey(id);
+                handled = true;
+            }
+
+            return IntPtr.Zero;
+        }
+
+        private void RegisterHotkeys()
+        {
+            if (_hotkeyManager == null)
+            {
+                Debug.WriteLine("HotkeyManager is null!");
                 return;
             }
+
+            _hotkeyManager.UnregisterAll();
+
+            Debug.WriteLine("=== Registering hotkeys ===");
+            Debug.WriteLine($"SuperF4Enabled: {_settings.SuperF4Enabled}, SuperF4Key: {_settings.SuperF4Key}, Modifiers: {_settings.SuperF4Modifiers}");
+
+            if (_settings.SuperF4Enabled && _settings.SuperF4Key != Key.None)
+            {
+                bool result = _hotkeyManager.RegisterHotkey(
+                    _settings.SuperF4Modifiers,
+                    _settings.SuperF4Key,
+                    () => SuperF4_KillActiveWindow());
+                Debug.WriteLine($"SuperF4 registered: {result}");
+            }
+            else
+            {
+                Debug.WriteLine("SuperF4 disabled or key not set");
+            }
+
+            if (_settings.RefreshHotkeyEnabled && _settings.RefreshKey != Key.None)
+            {
+                bool result = _hotkeyManager.RegisterHotkey(
+                    _settings.RefreshModifiers,
+                    _settings.RefreshKey,
+                    () => _viewModel?.RefreshCommand?.Execute(null));
+                Debug.WriteLine($"Refresh registered: {result}");
+            }
+
+            if (_settings.StartLoggingHotkeyEnabled && _settings.StartLoggingKey != Key.None)
+            {
+                bool result = _hotkeyManager.RegisterHotkey(
+                    _settings.StartLoggingModifiers,
+                    _settings.StartLoggingKey,
+                    () => _viewModel?.StartLoggingCommand?.Execute(null));
+                Debug.WriteLine($"StartLogging registered: {result}");
+            }
+
+            if (_settings.StopLoggingHotkeyEnabled && _settings.StopLoggingKey != Key.None)
+            {
+                bool result = _hotkeyManager.RegisterHotkey(
+                    _settings.StopLoggingModifiers,
+                    _settings.StopLoggingKey,
+                    () => _viewModel?.StopLoggingCommand?.Execute(null));
+                Debug.WriteLine($"StopLogging registered: {result}");
+            }
+
+            if (_settings.KillProcessHotkeyEnabled && _settings.KillProcessKey != Key.None)
+            {
+                bool result = _hotkeyManager.RegisterHotkey(
+                    _settings.KillProcessModifiers,
+                    _settings.KillProcessKey,
+                    () => _viewModel?.KillProcessCommand?.Execute(null));
+                Debug.WriteLine($"KillProcess registered: {result}");
+            }
+
+            Debug.WriteLine("=== Registration complete ===");
+        }
+
+        private void SuperF4_KillActiveWindow()
+        {
+            Debug.WriteLine("SuperF4 triggered!");
             try
             {
-                if (_processService.KillProcess(SelectedProcess.Id))
+                IntPtr hWnd = GetForegroundWindow();
+                if (hWnd == IntPtr.Zero) return;
+
+                GetWindowThreadProcessId(hWnd, out uint pid);
+                if (pid == 0) return;
+
+                try
                 {
-                    if (_isLoggingActive) _loggingService.LogEvent("UserKill", SelectedProcess.Name, SelectedProcess.Id);
-                    StatusMessage = "Процесс " + SelectedProcess.Name + " завершён";
-                    SelectedProcess = null;
+                    var proc = Process.GetProcessById((int)pid);
+                    if (proc.ProcessName.ToLower() == "processdirector") return;
+
+                    string name = proc.ProcessName.ToLower();
+                    if (name.Contains("svchost") || name.Contains("csrss") ||
+                        name.Contains("services") || name.Contains("lsass") ||
+                        name.Contains("winlogon") || name.Contains("system") ||
+                        name.Contains("taskmgr"))
+                    {
+                        return;
+                    }
+
+                    IntPtr hProcess = OpenProcess(PROCESS_TERMINATE | PROCESS_QUERY_INFORMATION, false, (uint)pid);
+                    if (hProcess != IntPtr.Zero)
+                    {
+                        TerminateProcess(hProcess, 0);
+                        CloseHandle(hProcess);
+                        proc.WaitForExit(2000);
+
+                        if (_viewModel != null && _viewModel.IsLoggingActive)
+                        {
+                            _viewModel.LogEvent("SuperF4", proc.ProcessName, (int)pid);
+                        }
+                    }
                 }
-                else
+                catch (Exception ex)
                 {
-                    StatusMessage = "Не удалось завершить " + SelectedProcess.Name;
+                    Debug.WriteLine($"SuperF4 error: {ex.Message}");
                 }
             }
             catch (Exception ex)
             {
-                StatusMessage = "Ошибка: " + ex.Message;
+                Debug.WriteLine($"SuperF4 general error: {ex.Message}");
             }
         }
 
-        private void KillProcessTree()
+        public void KillProcessTree(int pid)
         {
-            if (SelectedProcess == null) return;
-            var mainWindow = Application.Current.MainWindow as MainWindow;
-            if (mainWindow != null)
+            Task.Run(() =>
             {
-                mainWindow.KillProcessTree(SelectedProcess.Id);
-                if (_isLoggingActive) _loggingService.LogEvent("KillTree", SelectedProcess.Name, SelectedProcess.Id);
-                StatusMessage = "Дерево процессов " + SelectedProcess.Name + " завершено";
-                SelectedProcess = null;
-            }
-        }
-
-        private void FreezeProcess()
-        {
-            if (SelectedProcess == null) return;
-            var mainWindow = Application.Current.MainWindow as MainWindow;
-            if (mainWindow != null)
-            {
-                mainWindow.SuspendProcess(SelectedProcess.Id);
-                if (_isLoggingActive) _loggingService.LogEvent("Freeze", SelectedProcess.Name, SelectedProcess.Id);
-                StatusMessage = "Процесс " + SelectedProcess.Name + " заморожен";
-            }
-        }
-
-        private void UnfreezeProcess()
-        {
-            if (SelectedProcess == null) return;
-            var mainWindow = Application.Current.MainWindow as MainWindow;
-            if (mainWindow != null)
-            {
-                mainWindow.ResumeProcess(SelectedProcess.Id);
-                if (_isLoggingActive) _loggingService.LogEvent("Unfreeze", SelectedProcess.Name, SelectedProcess.Id);
-                StatusMessage = "Процесс " + SelectedProcess.Name + " разморожен";
-            }
-        }
-
-        private void OpenFileLocation()
-        {
-            if (SelectedProcess == null) return;
-            var mainWindow = Application.Current.MainWindow as MainWindow;
-            if (mainWindow != null)
-            {
-                mainWindow.OpenFileLocation(SelectedProcess.Id);
-            }
-        }
-
-        private int ExtractPidFromLog(string logEntry)
-        {
-            if (string.IsNullOrEmpty(logEntry)) return 0;
-            int start = logEntry.IndexOf("(PID: ");
-            if (start == -1) return 0;
-            start += 6;
-            int end = logEntry.IndexOf(")", start);
-            if (end == -1) return 0;
-            string pidStr = logEntry.Substring(start, end - start);
-            if (int.TryParse(pidStr, out int pid))
-                return pid;
-            return 0;
-        }
-
-        private string ExtractNameFromLog(string logEntry)
-        {
-            if (string.IsNullOrEmpty(logEntry)) return "";
-            int start = logEntry.IndexOf("| ");
-            if (start == -1) return "";
-            start += 2;
-            int end = logEntry.IndexOf(" (PID:", start);
-            if (end == -1) return "";
-            return logEntry.Substring(start, end - start).Trim();
-        }
-
-        private void KillProcessFromLog()
-        {
-            int pid = ExtractPidFromLog(SelectedLogEntry);
-            string name = ExtractNameFromLog(SelectedLogEntry);
-            if (pid <= 0) return;
-            var mainWindow = Application.Current.MainWindow as MainWindow;
-            if (mainWindow != null)
-            {
-                mainWindow.KillProcess(pid);
-                if (_isLoggingActive) _loggingService.LogEvent("UserKill", name, pid);
-                StatusMessage = "Процесс " + name + " завершён (из лога)";
-            }
-        }
-
-        private void KillProcessTreeFromLog()
-        {
-            int pid = ExtractPidFromLog(SelectedLogEntry);
-            string name = ExtractNameFromLog(SelectedLogEntry);
-            if (pid <= 0) return;
-            var mainWindow = Application.Current.MainWindow as MainWindow;
-            if (mainWindow != null)
-            {
-                mainWindow.KillProcessTree(pid);
-                if (_isLoggingActive) _loggingService.LogEvent("KillTree", name, pid);
-                StatusMessage = "Дерево процессов " + name + " завершено (из лога)";
-            }
-        }
-
-        private void FreezeProcessFromLog()
-        {
-            int pid = ExtractPidFromLog(SelectedLogEntry);
-            string name = ExtractNameFromLog(SelectedLogEntry);
-            if (pid <= 0) return;
-            var mainWindow = Application.Current.MainWindow as MainWindow;
-            if (mainWindow != null)
-            {
-                mainWindow.SuspendProcess(pid);
-                if (_isLoggingActive) _loggingService.LogEvent("Freeze", name, pid);
-                StatusMessage = "Процесс " + name + " заморожен (из лога)";
-            }
-        }
-
-        private void UnfreezeProcessFromLog()
-        {
-            int pid = ExtractPidFromLog(SelectedLogEntry);
-            string name = ExtractNameFromLog(SelectedLogEntry);
-            if (pid <= 0) return;
-            var mainWindow = Application.Current.MainWindow as MainWindow;
-            if (mainWindow != null)
-            {
-                mainWindow.ResumeProcess(pid);
-                if (_isLoggingActive) _loggingService.LogEvent("Unfreeze", name, pid);
-                StatusMessage = "Процесс " + name + " разморожен (из лога)";
-            }
-        }
-
-        private void OpenFileLocationFromLog()
-        {
-            int pid = ExtractPidFromLog(SelectedLogEntry);
-            if (pid <= 0) return;
-            var mainWindow = Application.Current.MainWindow as MainWindow;
-            if (mainWindow != null)
-            {
-                mainWindow.OpenFileLocation(pid);
-            }
-        }
-
-        private void OnNewLogEntry(string log)
-        {
-            Application.Current.Dispatcher.Invoke(() =>
-            {
-                _logEntries.Insert(0, log);
-                if (_logEntries.Count > 1000)
+                try
                 {
-                    _logEntries.RemoveAt(_logEntries.Count - 1);
+                    var mainProc = Process.GetProcessById(pid);
+                    var allProcesses = Process.GetProcesses();
+
+                    var childrenMap = new Dictionary<int, List<int>>();
+                    foreach (var proc in allProcesses)
+                    {
+                        try
+                        {
+                            int ppid = GetParentProcessId(proc.Id);
+                            if (!childrenMap.ContainsKey(ppid))
+                                childrenMap[ppid] = new List<int>();
+                            childrenMap[ppid].Add(proc.Id);
+                        }
+                        catch { }
+                    }
+
+                    var allChildren = new List<int>();
+                    var stack = new Stack<int>();
+                    stack.Push(pid);
+
+                    while (stack.Count > 0)
+                    {
+                        int current = stack.Pop();
+                        if (childrenMap.TryGetValue(current, out var childList))
+                        {
+                            foreach (int child in childList)
+                            {
+                                if (child != current && !allChildren.Contains(child))
+                                {
+                                    allChildren.Add(child);
+                                    stack.Push(child);
+                                }
+                            }
+                        }
+                    }
+
+                    try
+                    {
+                        mainProc.Kill();
+                        mainProc.WaitForExit(100);
+                    }
+                    catch { }
+
+                    if (!mainProc.HasExited)
+                    {
+                        try
+                        {
+                            IntPtr hProcess = OpenProcess(PROCESS_TERMINATE, false, (uint)pid);
+                            if (hProcess != IntPtr.Zero)
+                            {
+                                TerminateProcess(hProcess, 0);
+                                CloseHandle(hProcess);
+                            }
+                        }
+                        catch { }
+                    }
+
+                    if (!mainProc.HasExited)
+                    {
+                        try { mainProc.Close(); } catch { }
+                    }
+
+                    foreach (var childPid in allChildren)
+                    {
+                        try
+                        {
+                            var childProc = Process.GetProcessById(childPid);
+                            childProc.Kill();
+                            if (!childProc.WaitForExit(500))
+                            {
+                                IntPtr hProcess = OpenProcess(PROCESS_TERMINATE, false, (uint)childPid);
+                                if (hProcess != IntPtr.Zero)
+                                {
+                                    TerminateProcess(hProcess, 0);
+                                    CloseHandle(hProcess);
+                                }
+                            }
+                        }
+                        catch { }
+                    }
                 }
-                CurrentLogFilePath = _loggingService.GetCurrentLogFilePath();
+                catch { }
             });
         }
 
-        private void StartLogging()
-        {
-            if (_loggingService.StartSession())
-            {
-                _isLoggingActive = true;
-                LogStatus = "Логирование активно";
-                StatusMessage = "Логирование запущено";
-                _logEntries.Clear();
-                MessageBox.Show("Логирование запущено.\nЛоги сохраняются в " + _settings.LogFolderPath, "Информация", MessageBoxButton.OK, MessageBoxImage.Information);
-            }
-            else
-            {
-                MessageBox.Show("Не удалось запустить логирование", "Ошибка", MessageBoxButton.OK, MessageBoxImage.Error);
-            }
-        }
-
-        private void StopLogging()
-        {
-            _loggingService.StopSession();
-            _isLoggingActive = false;
-            LogStatus = "Логирование остановлено";
-            StatusMessage = "Логирование остановлено";
-        }
-
-        private void OpenLogFolder()
-        {
-            _loggingService.OpenLogDirectory();
-        }
-
-        private void OpenCurrentLogFile()
-        {
-            if (!string.IsNullOrEmpty(CurrentLogFilePath) && System.IO.File.Exists(CurrentLogFilePath))
-            {
-                Process.Start(new ProcessStartInfo { FileName = CurrentLogFilePath, UseShellExecute = true });
-            }
-            else
-            {
-                MessageBox.Show("Файл логов не найден", "Ошибка", MessageBoxButton.OK, MessageBoxImage.Warning);
-            }
-        }
-
-        private void InitializeTemperatureMonitoring()
+        public void KillProcess(int pid)
         {
             try
             {
-                _temperatureService = new TemperatureService();
-                if (_temperatureService.IsHardwareAvailable)
+                var proc = Process.GetProcessById(pid);
+                proc.Kill();
+                proc.WaitForExit(2000);
+            }
+            catch { }
+        }
+
+        public void SuspendProcess(int pid)
+        {
+            try
+            {
+                IntPtr hProcess = OpenProcess(PROCESS_SUSPEND_RESUME, false, (uint)pid);
+                if (hProcess != IntPtr.Zero)
                 {
-                    _temperatureTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(1) };
-                    _temperatureTimer.Tick += (s, e) => UpdateTemperatureData();
-                    _temperatureTimer.Start();
+                    NtSuspendProcess(hProcess);
+                    CloseHandle(hProcess);
                 }
             }
             catch { }
         }
 
-        private void UpdateTemperatureData()
+        public void ResumeProcess(int pid)
         {
-            _temperatureService.Update();
-            Application.Current.Dispatcher.Invoke(() =>
+            try
             {
-                CpuTemperature = _temperatureService.CpuTemperature > 0 ? _temperatureService.CpuTemperature.ToString("F1") + "°C" : "--°C";
-                GpuTemperature = _temperatureService.GpuTemperature > 0 ? _temperatureService.GpuTemperature.ToString("F1") + "°C" : "--°C";
-                CpuLoad = _temperatureService.CpuLoad > 0 ? _temperatureService.CpuLoad.ToString("F0") + "%" : "--%";
-                GpuLoad = _temperatureService.GpuLoad > 0 ? _temperatureService.GpuLoad.ToString("F0") + "%" : "--%";
-                RamUsage = _temperatureService.RamUsage.ToString("F0") + "%";
-                CpuLoadValue = _temperatureService.CpuLoad;
-                GpuLoadValue = _temperatureService.GpuLoad;
-                RamUsageValue = _temperatureService.RamUsage;
-            });
+                IntPtr hProcess = OpenProcess(PROCESS_SUSPEND_RESUME, false, (uint)pid);
+                if (hProcess != IntPtr.Zero)
+                {
+                    NtResumeProcess(hProcess);
+                    CloseHandle(hProcess);
+                }
+            }
+            catch { }
         }
 
-        public void Dispose()
+        public void OpenFileLocation(int pid)
         {
-            if (_isLoggingActive) _loggingService.StopSession();
-            _temperatureService?.Dispose();
-            _processService?.Dispose();
-            _temperatureTimer?.Stop();
+            try
+            {
+                var proc = Process.GetProcessById(pid);
+                string fileName = proc.MainModule?.FileName;
+                if (!string.IsNullOrEmpty(fileName) && System.IO.File.Exists(fileName))
+                {
+                    string argument = "/select, \"" + fileName + "\"";
+                    Process.Start("explorer.exe", argument);
+                }
+            }
+            catch { }
         }
 
-        public event PropertyChangedEventHandler PropertyChanged;
-
-        protected void OnPropertyChanged(string name)
+        private int GetParentProcessId(int pid)
         {
-            PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(name));
+            try
+            {
+                using (var searcher = new System.Management.ManagementObjectSearcher(
+                    "SELECT ParentProcessId FROM Win32_Process WHERE ProcessId = " + pid))
+                {
+                    foreach (var obj in searcher.Get())
+                    {
+                        return Convert.ToInt32(obj["ParentProcessId"]);
+                    }
+                }
+            }
+            catch { }
+            return 0;
+        }
+
+        protected override void OnKeyDown(KeyEventArgs e)
+        {
+            if (e.Key == Key.F5 && !_settings.RefreshHotkeyEnabled)
+            {
+                _viewModel?.RefreshCommand?.Execute(null);
+            }
+            base.OnKeyDown(e);
+        }
+
+        private void MainWindow_Closed(object sender, EventArgs e)
+        {
+            if (_hwndSource != null)
+            {
+                _hwndSource.RemoveHook(HwndHook);
+                _hwndSource = null;
+            }
+            _hotkeyManager?.Dispose();
+            _viewModel?.Dispose();
         }
     }
 
-    public class RelayCommand : ICommand
+    public class CategoryNameConverter : System.Windows.Data.IValueConverter
     {
-        private readonly Action<object> _execute;
-        private readonly Func<object, bool> _canExecute;
-
-        public RelayCommand(Action<object> execute, Func<object, bool> canExecute = null)
+        public object Convert(object value, Type targetType, object parameter, System.Globalization.CultureInfo culture)
         {
-            _execute = execute;
-            _canExecute = canExecute;
+            if (value is AppData.ProcessDisplayCategory category)
+            {
+                if (category == AppData.ProcessDisplayCategory.Apps)
+                    return "Приложения";
+                if (category == AppData.ProcessDisplayCategory.Background)
+                    return "Фоновые";
+                if (category == AppData.ProcessDisplayCategory.Windows)
+                    return "Системные";
+            }
+            return value?.ToString() ?? "";
         }
 
-        public bool CanExecute(object parameter)
+        public object ConvertBack(object value, Type targetType, object parameter, System.Globalization.CultureInfo culture)
         {
-            return _canExecute == null || _canExecute(parameter);
-        }
-
-        public void Execute(object parameter)
-        {
-            _execute(parameter);
-        }
-
-        public event EventHandler CanExecuteChanged
-        {
-            add { CommandManager.RequerySuggested += value; }
-            remove { CommandManager.RequerySuggested -= value; }
-        }
-
-        public void RaiseCanExecuteChanged()
-        {
-            CommandManager.InvalidateRequerySuggested();
+            throw new NotImplementedException();
         }
     }
 }
